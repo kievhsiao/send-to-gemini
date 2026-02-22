@@ -1,0 +1,33 @@
+{
+    "manifest_version": 3,
+    "name": "Send to Gemini",
+    "version": "1.0",
+    "description": "Right-click to send selected text to Google Gemini with a customizable prompt.",
+    "permissions": [
+        "contextMenus",
+        "storage"
+    ],
+    "host_permissions": [
+        "*://gemini.google.com/*",
+        "<all_urls>"
+    ],
+    "background": {
+        "service_worker": "background.js",
+        "type": "module"
+    },
+    "content_scripts": [
+        {
+            "matches": [
+                "*://gemini.google.com/*"
+            ],
+            "js": [
+                "content.js"
+            ],
+            "run_at": "document_idle"
+        }
+    ],
+    "options_ui": {
+        "page": "options.html",
+        "open_in_tab": true
+    }
+}

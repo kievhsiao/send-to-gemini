@@ -1,0 +1,12 @@
+{
+  "name": "send-to-gemini",
+  "version": "1.0",
+  "description": "Send selected text to Google Gemini via context menu",
+  "scripts": {
+    "build": "tsc"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "@types/chrome": "^0.0.240"
+  }
+}
