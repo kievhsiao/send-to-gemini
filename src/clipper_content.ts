@@ -114,6 +114,9 @@ function cleanForMarkdown(el: Element): Element {
         '[style*="display:none"]',
         '[style*="display: none"]',
         '[style*="visibility:hidden"]',
+        'img[src^="data:image/svg+xml"]',
+        'img[src^="data:image/png;base64"]',
+        'img[src^="data:image/jpeg;base64"]'
     ].join(', ');
     clone.querySelectorAll(selectors).forEach(n => n.remove());
     return clone;
@@ -145,7 +148,20 @@ function makeTurndown(): TurndownService {
         filter: ['script', 'style', 'noscript'] as any,
         replacement: () => ''
     });
+    // Convert links to plain text
+    td.addRule('linksToText', {
+        filter: 'a' as any,
+        replacement: (content: string) => content
+    });
     return td;
+}
+
+/** Cleanup excessive whitespace and blank lines */
+function cleanupMarkdown(markdown: string): string {
+    return markdown
+        .replace(/\n{2,}/g, '\n') // Collapse 2+ newlines into 1
+        .replace(/[ \t]+\n/g, '\n')  // Remove trailing spaces on lines
+        .trim();
 }
 
 /** Build YAML front-matter + filename */
@@ -156,6 +172,7 @@ function buildDocument(
     sectionTitle: string,
     clippedAt: string
 ): { content: string; filename: string } {
+    const cleanedMarkdown = cleanupMarkdown(markdown);
     const frontMatter = [
         '---',
         `title: "${pageTitle.replace(/"/g, '\\"')}"`,
@@ -167,7 +184,7 @@ function buildDocument(
 
     const datePrefix = clippedAt.substring(0, 10);
     const filename = `clip-${datePrefix}-${sanitizeFilename(sectionTitle)}.md`;
-    return { content: frontMatter + markdown, filename };
+    return { content: frontMatter + cleanedMarkdown, filename };
 }
 
 /** Trigger a file download in the browser */
