@@ -69,6 +69,25 @@ function updateContextMenus(prompts: string[], gems: Gem[]) {
                 });
             });
         }
+
+        // 4. Web Clipper
+        chrome.contextMenus.create({
+            id: 'separator-clipper',
+            type: 'separator',
+            contexts: ['page', 'selection', 'image']
+        });
+
+        chrome.contextMenus.create({
+            id: 'clipper-frame',
+            title: '擷取框架內容 (Save as Markdown)',
+            contexts: ['page', 'selection', 'image']
+        });
+
+        chrome.contextMenus.create({
+            id: 'clipper-selection',
+            title: '擷取選取內容 (Clip Selection)',
+            contexts: ['selection']
+        });
     });
 }
 
@@ -133,7 +152,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
             if (info.selectionText) fullText = info.selectionText;
         }
 
-        // Only save state and open tab if there is text OR an image. 
+        // Only save state and open tab if there is text OR an image.
         if (fullText || pendingGeminiImage) {
             const storageData: any = {};
             if (fullText) storageData.pendingGeminiPrompt = fullText;
@@ -141,6 +160,44 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
 
             await chrome.storage.local.set(storageData);
             chrome.tabs.create({ url: destinationUrl });
+        }
+    } else if (menuId === 'clipper-frame') {
+        // Web Clipper: ask content script to clip the right-clicked frame
+        if (tab?.id !== undefined) {
+            const tabId = tab.id;
+            try {
+                await chrome.tabs.sendMessage(tabId, { action: 'clip-frame' });
+            } catch (_e) {
+                try {
+                    await chrome.scripting.executeScript({
+                        target: { tabId },
+                        files: ['clipper_content.js']
+                    });
+                    await new Promise(r => setTimeout(r, 150));
+                    await chrome.tabs.sendMessage(tabId, { action: 'clip-frame' });
+                } catch (injectErr) {
+                    console.error('[Clipper] Failed to inject or message content script:', injectErr);
+                }
+            }
+        }
+    } else if (menuId === 'clipper-selection') {
+        // Clip selected text as Markdown
+        if (tab?.id !== undefined) {
+            const tabId = tab.id;
+            try {
+                await chrome.tabs.sendMessage(tabId, { action: 'clip-selection' });
+            } catch (_e) {
+                try {
+                    await chrome.scripting.executeScript({
+                        target: { tabId },
+                        files: ['clipper_content.js']
+                    });
+                    await new Promise(r => setTimeout(r, 150));
+                    await chrome.tabs.sendMessage(tabId, { action: 'clip-selection' });
+                } catch (injectErr) {
+                    console.error('[Clipper] Failed to inject or message content script:', injectErr);
+                }
+            }
         }
     }
 });

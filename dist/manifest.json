@@ -1,11 +1,12 @@
 {
     "manifest_version": 3,
     "name": "Send to Gemini",
-    "version": "1.0",
-    "description": "Right-click to send selected text to Google Gemini with a customizable prompt.",
+    "version": "1.1",
+    "description": "Right-click to send selected text to Google Gemini, or clip a page section as Markdown.",
     "permissions": [
         "contextMenus",
-        "storage"
+        "storage",
+        "scripting"
     ],
     "host_permissions": [
         "*://gemini.google.com/*",
@@ -22,6 +23,15 @@
             ],
             "js": [
                 "content.js"
+            ],
+            "run_at": "document_idle"
+        },
+        {
+            "matches": [
+                "<all_urls>"
+            ],
+            "js": [
+                "clipper_content.js"
             ],
             "run_at": "document_idle"
         }
