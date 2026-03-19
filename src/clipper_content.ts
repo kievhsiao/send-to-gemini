@@ -258,11 +258,81 @@ function clipSelection(): void {
     downloadMarkdown(content, filename);
 }
 
+/**
+ * Gather all image sources and return them.
+ * Checks standard src, lazy-loading data attributes, and srcset.
+ */
+function getAllImages(): string[] {
+    const urls = new Set<string>();
+    const lazyAttrs = [
+        'data-src', 'data-original', 'data-lazy-src', 'original-src', 
+        'data-actualsrc', 'data-src-retina', 'data-hi-res-src'
+    ];
+
+    function collectFromElement(root: ParentNode) {
+        // 1. img tags
+        root.querySelectorAll('img').forEach(img => {
+            if (img.src && img.src.startsWith('http')) {
+                urls.add(img.src);
+            }
+            for (const attr of lazyAttrs) {
+                const val = img.getAttribute(attr);
+                if (val && val.startsWith('http')) {
+                    urls.add(val);
+                }
+            }
+            if (img.srcset) {
+                img.srcset.split(',').forEach(p => {
+                    const url = p.trim().split(/\s+/)[0];
+                    if (url && url.startsWith('http')) urls.add(url);
+                });
+            }
+        });
+
+        // 2. source tags
+        root.querySelectorAll('source').forEach(source => {
+            const srcset = source.getAttribute('srcset');
+            if (srcset) {
+                srcset.split(',').forEach(p => {
+                    const url = p.trim().split(/\s+/)[0];
+                    if (url && url.startsWith('http')) urls.add(url);
+                });
+            }
+        });
+
+        // 3. background-image in styles
+        root.querySelectorAll('*').forEach(el => {
+            const style = window.getComputedStyle(el);
+            const bg = style.backgroundImage;
+            if (bg && bg.startsWith('url("http')) {
+                const url = bg.slice(5, -2);
+                if (url) urls.add(url);
+            }
+            
+            // 4. Check for Shadow DOM
+            if (el.shadowRoot) {
+                collectFromElement(el.shadowRoot);
+            }
+        });
+    }
+
+    collectFromElement(document);
+    
+    const result = Array.from(urls);
+    console.log(`[Clipper] Found ${result.length} unique image URLs.`);
+    return result;
+}
+
 // Listen for commands from the background script
-chrome.runtime.onMessage.addListener((message: { action: string }) => {
+chrome.runtime.onMessage.addListener((message: { action: string; url?: string }, sender, sendResponse) => {
+    console.log('[Clipper] Message received:', message.action);
     if (message.action === 'clip-frame') {
         clipFrame();
     } else if (message.action === 'clip-selection') {
         clipSelection();
+    } else if (message.action === 'get-all-images') {
+        const images = getAllImages();
+        sendResponse({ urls: images });
     }
+    return true; // Keep channel open for async if needed
 });

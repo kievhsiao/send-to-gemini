@@ -6,7 +6,9 @@
     "permissions": [
         "contextMenus",
         "storage",
-        "scripting"
+        "scripting",
+        "downloads",
+        "declarativeNetRequest"
     ],
     "host_permissions": [
         "*://gemini.google.com/*",
