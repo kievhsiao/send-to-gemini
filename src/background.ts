@@ -1,30 +1,21 @@
-const BG_DEFAULT_PROMPTS = [
-    "翻譯以下文字: ",
-    "Translate to English: ",
-    "請總結這段文字: "
-];
-
-interface Gem {
-    name: string;
-    id: string;
-}
+import { DEFAULT_PROMPTS, Gem, STORAGE_KEY_PROMPTS, STORAGE_KEY_GEMS } from './shared';
 
 chrome.runtime.onInstalled.addListener(async () => {
-    const data = await chrome.storage.sync.get(['prompts', 'gems']);
-    let prompts: string[] = data.prompts;
-    let gems: Gem[] = data.gems || [];
+    const data = await chrome.storage.sync.get([STORAGE_KEY_PROMPTS, STORAGE_KEY_GEMS]);
+    let prompts: string[] = data[STORAGE_KEY_PROMPTS];
+    let gems: Gem[] = data[STORAGE_KEY_GEMS] || [];
 
     if (!prompts) {
-        prompts = BG_DEFAULT_PROMPTS;
-        await chrome.storage.sync.set({ prompts });
+        prompts = DEFAULT_PROMPTS;
+        await chrome.storage.sync.set({ [STORAGE_KEY_PROMPTS]: prompts });
     }
     updateContextMenus(prompts, gems);
 });
 
 chrome.storage.onChanged.addListener((changes, area) => {
     if (area === 'sync') {
-        chrome.storage.sync.get(['prompts', 'gems']).then(data => {
-            updateContextMenus(data.prompts || BG_DEFAULT_PROMPTS, data.gems || []);
+        chrome.storage.sync.get([STORAGE_KEY_PROMPTS, STORAGE_KEY_GEMS]).then(data => {
+            updateContextMenus(data[STORAGE_KEY_PROMPTS] || DEFAULT_PROMPTS, data[STORAGE_KEY_GEMS] || []);
         });
     }
 });
@@ -104,29 +95,7 @@ function updateContextMenus(prompts: string[], gems: Gem[]) {
     });
 }
 
-async function prepareMediaData(info: chrome.contextMenus.OnClickData): Promise<{ base64: string; mimeType: string } | null> {
-    if (info.mediaType === 'image' && info.srcUrl) {
-        try {
-            const response = await fetch(info.srcUrl);
-            const blob = await response.blob();
-
-            const buffer = await blob.arrayBuffer();
-            const bytes = new Uint8Array(buffer);
-            let binary = '';
-            for (let i = 0; i < bytes.byteLength; i += 8192) {
-                const chunk = bytes.subarray(i, i + 8192);
-                const chunkArray = Array.from(chunk);
-                binary += String.fromCharCode.apply(null, chunkArray);
-            }
-            const base64 = btoa(binary);
-            return { base64: base64, mimeType: blob.type };
-        } catch (e) {
-            console.error("Error fetching image", e);
-        }
-    }
-    return null;
-}
-
+// Fix #2: Single, canonical ArrayBuffer → Base64 converter.
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
     let binary = '';
     const bytes = new Uint8Array(buffer);
@@ -135,6 +104,21 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
         binary += String.fromCharCode(bytes[i]);
     }
     return btoa(binary);
+}
+
+async function prepareMediaData(info: chrome.contextMenus.OnClickData): Promise<{ base64: string; mimeType: string } | null> {
+    if (info.mediaType === 'image' && info.srcUrl) {
+        try {
+            const response = await fetch(info.srcUrl);
+            const blob = await response.blob();
+            // Fix #2: reuse arrayBufferToBase64 instead of duplicating the logic
+            const base64 = arrayBufferToBase64(await blob.arrayBuffer());
+            return { base64, mimeType: blob.type };
+        } catch (e) {
+            console.error("Error fetching image", e);
+        }
+    }
+    return null;
 }
 
 function executeDownload(url: string, tabUrl: string | undefined, withHeaders: boolean) {
@@ -164,13 +148,50 @@ function executeDownload(url: string, tabUrl: string | undefined, withHeaders: b
     }
 }
 
+
+// Fix #3: Shared helper that sends a message to a content script, injecting
+// clipper_content.js on-demand if not yet loaded.
+//
+// Per-tab injection cache: avoids redundant executeScript calls.
+// Even though clipper_content.ts has its own idempotency guard, we track
+// which tabs have been injected to skip the inject+wait round-trip entirely.
+const injectedTabs = new Set<number>();
+
+// Clear cache when the user navigates or closes a tab (the injected script
+// will be gone and must be re-injected on the next action).
+chrome.tabs.onRemoved.addListener((tabId) => injectedTabs.delete(tabId));
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+    if (changeInfo.status === 'loading') injectedTabs.delete(tabId);
+});
+
+async function sendToContentScript(tabId: number, message: { action: string;[key: string]: unknown }): Promise<unknown> {
+    if (!injectedTabs.has(tabId)) {
+        // First attempt: try messaging without injection (auto-injected pages, or
+        // a page that already has the script from a previous visit in this session)
+        try {
+            const result = await chrome.tabs.sendMessage(tabId, message);
+            injectedTabs.add(tabId); // messaging succeeded → script already present
+            return result;
+        } catch {
+            // Script not loaded → inject, then retry once
+            await chrome.scripting.executeScript({ target: { tabId }, files: ['clipper_content.js'] });
+            await new Promise(r => setTimeout(r, 200));
+            injectedTabs.add(tabId);
+            return await chrome.tabs.sendMessage(tabId, message);
+        }
+    }
+
+    // Tab is already in cache → content script is present, message directly
+    return await chrome.tabs.sendMessage(tabId, message);
+}
+
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     const menuId = info.menuItemId.toString();
 
     if (menuId.startsWith('gemini-')) {
-        const data = await chrome.storage.sync.get(['prompts', 'gems']);
-        const prompts: string[] = data.prompts || BG_DEFAULT_PROMPTS;
-        const gems: Gem[] = data.gems || [];
+        const data = await chrome.storage.sync.get([STORAGE_KEY_PROMPTS, STORAGE_KEY_GEMS]);
+        const prompts: string[] = data[STORAGE_KEY_PROMPTS] || DEFAULT_PROMPTS;
+        const gems: Gem[] = data[STORAGE_KEY_GEMS] || [];
 
         let fullText = "";
         let destinationUrl = 'https://gemini.google.com/app';
@@ -183,7 +204,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
             const selectedPrompt = prompts[index];
             if (!selectedPrompt) return;
             if (info.selectionText) {
-                fullText = `${selectedPrompt}\n\n以下為輸入內容:\n${info.selectionText}`;
+                fullText = `${selectedPrompt}\n\n以下為輸入內容：\n${info.selectionText}`;
             } else {
                 fullText = selectedPrompt;
             }
@@ -196,7 +217,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
         }
 
         if (fullText || pendingGeminiImage) {
-            const storageData: any = {};
+            const storageData: Record<string, unknown> = {};
             if (fullText) storageData.pendingGeminiPrompt = fullText;
             if (pendingGeminiImage) storageData.pendingGeminiImage = pendingGeminiImage;
             await chrome.storage.local.set(storageData);
@@ -206,7 +227,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
         if (tab?.id !== undefined) {
             const tabId = tab.id;
             console.log('[Background] Download All Images triggered for tab:', tabId, 'URL:', tab.url);
-            
+
             if (!chrome.downloads) {
                 console.error('[Background] chrome.downloads API is NOT available. Check manifest permissions.');
                 return;
@@ -214,109 +235,79 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
 
             const tabUrl = tab.url;
 
-            async function processDownloadRequest() {
-                try {
-                    const response = await chrome.tabs.sendMessage(tabId, { action: 'get-all-images' });
-                    const urls = response?.urls || [];
-                    console.log('[Background] Found URLs count:', urls.length);
-                    
-                    if (urls.length > 0) {
-                        const ruleId = 1;
-                        // Add DNR rule to inject Referer for all extension-initiated requests
-                        console.log('[Background] Setting DNR rule for Referer:', tabUrl);
-                        await chrome.declarativeNetRequest.updateDynamicRules({
-                            removeRuleIds: [ruleId],
-                            addRules: [{
-                                id: ruleId,
-                                priority: 1,
-                                action: {
-                                    type: chrome.declarativeNetRequest.RuleActionType.MODIFY_HEADERS,
-                                    requestHeaders: [{
-                                        header: 'Referer',
-                                        operation: chrome.declarativeNetRequest.HeaderOperation.SET,
-                                        value: tabUrl || ''
-                                    }]
-                                },
-                                condition: {
-                                    urlFilter: '*',
-                                    resourceTypes: [chrome.declarativeNetRequest.ResourceType.XMLHTTPREQUEST]
-                                }
-                            }]
-                        });
-
-                        for (let i = 0; i < urls.length; i++) {
-                            const url = urls[i];
-                            console.log(`[Background] Fetching image ${i + 1}/${urls.length}: ${url}`);
-                            try {
-                                const fetchResponse = await fetch(url);
-                                if (!fetchResponse.ok) throw new Error(`HTTP ${fetchResponse.status}`);
-                                
-                                const blob = await fetchResponse.blob();
-                                const arrayBuffer = await blob.arrayBuffer();
-                                const base64 = arrayBufferToBase64(arrayBuffer);
-                                const dataUrl = `data:${blob.type};base64,${base64}`;
-                                
-                                executeDownload(dataUrl, undefined, false);
-                            } catch (err) {
-                                console.error(`[Background] Failed to fetch/download ${url}:`, err);
-                                // Last resort: direct download
-                                executeDownload(url, tabUrl, false);
-                            }
-                            await new Promise(r => setTimeout(r, 100));
-                        }
-
-                        // Cleanup rule
-                        await chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds: [ruleId] });
-                    } else {
-                        console.warn('[Background] No image URLs returned. Try scrolling down?');
-                    }
-                } catch (err) {
-                    console.error('[Background] Messaging failed (F5 required):', err);
-                    throw err;
-                }
-            }
-
             try {
-                await processDownloadRequest();
-            } catch (err) {
-                console.log('[Background] Attempting content script injection fallback...');
-                try {
-                    await chrome.scripting.executeScript({ target: { tabId }, files: ['clipper_content.js'] });
-                    await new Promise(r => setTimeout(r, 400));
-                    await processDownloadRequest();
-                } catch (injectErr) {
-                    console.error('[Background] Injection fallback failed. Direct action to this page is blocked or script missing.', injectErr);
+                // Fix #3: use shared sendToContentScript helper
+                const response = await sendToContentScript(tabId, { action: 'get-all-images' }) as { urls?: string[] };
+                const urls = response?.urls || [];
+                console.log('[Background] Found URLs count:', urls.length);
+
+                if (urls.length > 0) {
+                    const ruleId = 1;
+                    console.log('[Background] Setting DNR rule for Referer:', tabUrl);
+                    await chrome.declarativeNetRequest.updateDynamicRules({
+                        removeRuleIds: [ruleId],
+                        addRules: [{
+                            id: ruleId,
+                            priority: 1,
+                            action: {
+                                type: chrome.declarativeNetRequest.RuleActionType.MODIFY_HEADERS,
+                                requestHeaders: [{
+                                    header: 'Referer',
+                                    operation: chrome.declarativeNetRequest.HeaderOperation.SET,
+                                    value: tabUrl || ''
+                                }]
+                            },
+                            condition: {
+                                urlFilter: '*',
+                                resourceTypes: [chrome.declarativeNetRequest.ResourceType.XMLHTTPREQUEST]
+                            }
+                        }]
+                    });
+
+                    for (let i = 0; i < urls.length; i++) {
+                        const url = urls[i];
+                        console.log(`[Background] Fetching image ${i + 1}/${urls.length}: ${url}`);
+                        try {
+                            const fetchResponse = await fetch(url);
+                            if (!fetchResponse.ok) throw new Error(`HTTP ${fetchResponse.status}`);
+
+                            const blob = await fetchResponse.blob();
+                            // Fix #2: reuse arrayBufferToBase64
+                            const base64 = arrayBufferToBase64(await blob.arrayBuffer());
+                            const dataUrl = `data:${blob.type};base64,${base64}`;
+                            executeDownload(dataUrl, undefined, false);
+                        } catch (err) {
+                            console.error(`[Background] Failed to fetch/download ${url}:`, err);
+                            executeDownload(url, tabUrl, false);
+                        }
+                        await new Promise(r => setTimeout(r, 100));
+                    }
+
+                    // Cleanup DNR rule
+                    await chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds: [ruleId] });
+                } else {
+                    console.warn('[Background] No image URLs returned. Try scrolling down?');
                 }
+            } catch (err) {
+                console.error('[Background] Content script message failed:', err);
             }
         }
     } else if (menuId === 'clipper-frame') {
         if (tab?.id !== undefined) {
-            const tabId = tab.id;
+            // Fix #3: use shared sendToContentScript helper
             try {
-                await chrome.tabs.sendMessage(tabId, { action: 'clip-frame' });
-            } catch (_e) {
-                try {
-                    await chrome.scripting.executeScript({ target: { tabId }, files: ['clipper_content.js'] });
-                    await new Promise(r => setTimeout(r, 150));
-                    await chrome.tabs.sendMessage(tabId, { action: 'clip-frame' });
-                } catch (injectErr) {
-                    console.error('[Clipper] Failed to inject or message content script:', injectErr);
-                }
+                await sendToContentScript(tab.id, { action: 'clip-frame' });
+            } catch (err) {
+                console.error('[Clipper] Failed to inject or message content script:', err);
             }
         }
     } else if (menuId === 'clipper-selection') {
         if (tab?.id !== undefined) {
-            const tabId = tab.id;
+            // Fix #3: use shared sendToContentScript helper
             try {
-                await chrome.tabs.sendMessage(tabId, { action: 'clip-selection' });
-            } catch (_e) {
-                try {
-                    await chrome.scripting.executeScript({ target: { tabId }, files: ['clipper_content.js'] });
-                    await new Promise(r => setTimeout(r, 150));
-                    await chrome.tabs.sendMessage(tabId, { action: 'clip-selection' });
-                } catch (injectErr) {
-                    console.error('[Clipper] Failed to inject or message content script:', injectErr);
-                }
+                await sendToContentScript(tab.id, { action: 'clip-selection' });
+            } catch (err) {
+                console.error('[Clipper] Failed to inject or message content script:', err);
             }
         }
     }

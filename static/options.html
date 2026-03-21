@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="UTF-8">
+  <title>Send to Gemini Options</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+
+<body>
+  <div class="container">
+    <h1>Send to Gemini Prompts</h1>
+
+    <h2>Your Pre-Prompts</h2>
+    <div id="prompts-list"></div>
+    <div class="add-prompt">
+      <textarea id="new-prompt" placeholder="New Prompt (e.g., Translate:)"></textarea>
+      <button id="add-prompt-btn">Add Prompt</button>
+    </div>
+
+    <h2>Your Gemini Gems</h2>
+    <div id="gems-list"></div>
+    <div class="add-gem flex-row">
+      <input type="text" id="new-gem-name" placeholder="Gem Name (e.g., Coding Assistant)">
+      <input type="text" id="new-gem-id" placeholder="Gem ID (e.g., ddb315f6c24f)">
+      <button id="add-gem-btn">Add Gem</button>
+    </div>
+
+    <button id="save-btn">Save All Changes</button>
+    <div id="status"></div>
+  </div>
+  <script src="options.js" type="module"></script>
+</body>
+
+</html>

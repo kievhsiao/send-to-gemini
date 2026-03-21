@@ -1,0 +1,45 @@
+{
+    "manifest_version": 3,
+    "name": "Send to Gemini",
+    "version": "1.1",
+    "description": "Right-click to send selected text to Google Gemini, or clip a page section as Markdown.",
+    "permissions": [
+        "contextMenus",
+        "storage",
+        "scripting",
+        "downloads",
+        "declarativeNetRequest"
+    ],
+    "host_permissions": [
+        "*://gemini.google.com/*",
+        "<all_urls>"
+    ],
+    "background": {
+        "service_worker": "background.js",
+        "type": "module"
+    },
+    "content_scripts": [
+        {
+            "matches": [
+                "*://gemini.google.com/*"
+            ],
+            "js": [
+                "content.js"
+            ],
+            "run_at": "document_idle"
+        },
+        {
+            "matches": [
+                "<all_urls>"
+            ],
+            "js": [
+                "clipper_content.js"
+            ],
+            "run_at": "document_idle"
+        }
+    ],
+    "options_ui": {
+        "page": "options.html",
+        "open_in_tab": true
+    }
+}

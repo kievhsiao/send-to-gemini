@@ -1,5 +1,19 @@
 import TurndownService from 'turndown';
 
+// ── Idempotency guard ───────────────────────────────────────────────────────
+// Chrome's scripting.executeScript() does NOT deduplicate injections.
+// If this script is injected more than once into the same page (e.g., on
+// transient sendMessage failures), registering a second onMessage listener
+// would cause clip-frame / clip-selection to fire twice → two downloads.
+// The window-level flag ensures we bail out on any subsequent injection.
+declare const __clipperContentLoaded: boolean | undefined;
+if ((window as Window & { __clipperContentLoaded?: boolean }).__clipperContentLoaded) {
+    // Already registered — do nothing and let the existing listener handle it.
+    throw new Error('[Clipper] Already loaded — skipping duplicate registration.');
+}
+(window as Window & { __clipperContentLoaded?: boolean }).__clipperContentLoaded = true;
+// ───────────────────────────────────────────────────────────────────────────
+
 // Track the last right-clicked element
 let lastRightClickedElement: Element | null = null;
 
@@ -265,7 +279,7 @@ function clipSelection(): void {
 function getAllImages(): string[] {
     const urls = new Set<string>();
     const lazyAttrs = [
-        'data-src', 'data-original', 'data-lazy-src', 'original-src', 
+        'data-src', 'data-original', 'data-lazy-src', 'original-src',
         'data-actualsrc', 'data-src-retina', 'data-hi-res-src'
     ];
 
@@ -308,7 +322,7 @@ function getAllImages(): string[] {
                 const url = bg.slice(5, -2);
                 if (url) urls.add(url);
             }
-            
+
             // 4. Check for Shadow DOM
             if (el.shadowRoot) {
                 collectFromElement(el.shadowRoot);
@@ -317,7 +331,7 @@ function getAllImages(): string[] {
     }
 
     collectFromElement(document);
-    
+
     const result = Array.from(urls);
     console.log(`[Clipper] Found ${result.length} unique image URLs.`);
     return result;

@@ -1,21 +1,12 @@
-const OPT_DEFAULT_PROMPTS = [
-    "翻譯以下文字: ",
-    "Translate to English: ",
-    "請總結這段文字: "
-];
-
-interface Gem {
-    name: string;
-    id: string;
-}
+import { DEFAULT_PROMPTS, Gem, STORAGE_KEY_PROMPTS, STORAGE_KEY_GEMS } from './shared';
 
 let prompts: string[] = [];
 let gems: Gem[] = [];
 
 document.addEventListener('DOMContentLoaded', async () => {
-    const data = await chrome.storage.sync.get(['prompts', 'gems']);
-    prompts = data.prompts || OPT_DEFAULT_PROMPTS;
-    gems = data.gems || [];
+    const data = await chrome.storage.sync.get([STORAGE_KEY_PROMPTS, STORAGE_KEY_GEMS]);
+    prompts = data[STORAGE_KEY_PROMPTS] || DEFAULT_PROMPTS;
+    gems = data[STORAGE_KEY_GEMS] || [];
 
     renderPrompts();
     renderGems();
@@ -122,8 +113,8 @@ async function saveOptions() {
     const validGems = gems.filter(g => g.name.trim() !== '' && g.id.trim() !== '');
 
     await chrome.storage.sync.set({
-        prompts: validPrompts,
-        gems: validGems
+        [STORAGE_KEY_PROMPTS]: validPrompts,
+        [STORAGE_KEY_GEMS]: validGems
     });
 
     const status = document.getElementById('status');
