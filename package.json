@@ -7,10 +7,13 @@
     "build": "tsc --noEmit && cmd /c npx esbuild src/background.ts src/content.ts src/clipper_content.ts src/options.ts --bundle --outdir=dist --platform=browser --target=chrome120 --external:chrome && cmd /c \"copy static\\* dist\\\""
   },
   "devDependencies": {
-    "typescript": "^5.0.0",
     "@types/chrome": "^0.0.240",
+    "@types/turndown": "^5.0.5",
     "esbuild": "^0.25.1",
     "turndown": "^7.2.0",
-    "@types/turndown": "^5.0.5"
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "defuddle": "^0.14.0"
   }
 }

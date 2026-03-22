@@ -1,3 +1,4 @@
+import Defuddle from 'defuddle/full';
 import TurndownService from 'turndown';
 
 // ── Idempotency guard ───────────────────────────────────────────────────────
@@ -7,11 +8,10 @@ import TurndownService from 'turndown';
 // would cause clip-frame / clip-selection to fire twice → two downloads.
 // The window-level flag ensures we bail out on any subsequent injection.
 declare const __clipperContentLoaded: boolean | undefined;
-if ((window as Window & { __clipperContentLoaded?: boolean }).__clipperContentLoaded) {
-    // Already registered — do nothing and let the existing listener handle it.
+if ((window as any).__clipperContentLoaded) {
     throw new Error('[Clipper] Already loaded — skipping duplicate registration.');
 }
-(window as Window & { __clipperContentLoaded?: boolean }).__clipperContentLoaded = true;
+(window as any).__clipperContentLoaded = true;
 // ───────────────────────────────────────────────────────────────────────────
 
 // Track the last right-clicked element
@@ -20,121 +20,6 @@ let lastRightClickedElement: Element | null = null;
 document.addEventListener('contextmenu', (e: MouseEvent) => {
     lastRightClickedElement = e.target as Element;
 });
-
-/** Tags whose content should never be the clip target */
-const SKIP_TAGS = new Set([
-    'SCRIPT', 'STYLE', 'NOSCRIPT', 'SVG', 'HEAD', 'META', 'LINK'
-]);
-
-/**
- * Walk up the DOM tree from the target element to find the best semantic
- * container to clip. Prefers role="article", semantic HTML5 tags, then
- * meaningful divs. Guards against selecting containers that span the whole
- * viewport (like navbars and sidebars).
- */
-function findBestContainer(el: Element): Element {
-    const semanticTags = new Set([
-        'ARTICLE', 'SECTION', 'BLOCKQUOTE', 'FIGURE'
-    ]);
-
-    let current: Element | null = el;
-    let best: Element = el;
-
-    while (current && current !== document.body) {
-        const tag = current.tagName.toUpperCase();
-
-        // Skip non-content elements
-        if (SKIP_TAGS.has(tag)) {
-            current = current.parentElement;
-            continue;
-        }
-
-        const role = current.getAttribute('role');
-
-        // role="article" is ideal for FB/Twitter posts — but guard against
-        // containers that are almost as tall as the full viewport (navigation).
-        if (role === 'article' && !isFullViewport(current)) {
-            return current;
-        }
-
-        // Semantic HTML5 elements (not nav/header/footer which tend to be chrome)
-        if (semanticTags.has(tag) && !isFullViewport(current)) {
-            return current;
-        }
-
-        // Facebook: data-pagelet="permalink_post_*" wraps the post on its own page
-        const pagelet = current.getAttribute('data-pagelet') ?? '';
-        if (pagelet.toLowerCase().includes('post') && !isFullViewport(current)) {
-            return current;
-        }
-
-        // Accept any div/li/td with substantial visible text, not spanning viewport
-        if (['DIV', 'LI', 'TD', 'P'].includes(tag)) {
-            const text = getVisibleText(current);
-            if (text.length > 100 && !isFullViewport(current)) {
-                best = current;
-            }
-        }
-
-        // Don't climb past body's direct children (avoids whole-page captures)
-        if (current.parentElement === document.body) {
-            break;
-        }
-
-        current = current.parentElement;
-    }
-
-    return best;
-}
-
-/**
- * Returns true if the element's bounding box covers most of the viewport
- * height — a signal that it's a layout shell (nav, sidebar, page wrapper)
- * rather than a content block.
- */
-function isFullViewport(el: Element): boolean {
-    const rect = el.getBoundingClientRect();
-    const vh = window.innerHeight;
-    // Flag if element is taller than 80 % of the visible viewport
-    return rect.height > vh * 0.80;
-}
-
-/**
- * Extract only visible text (skips script/style nodes).
- */
-function getVisibleText(el: Element): string {
-    let text = '';
-    for (const node of el.childNodes) {
-        if (node.nodeType === Node.TEXT_NODE) {
-            text += node.textContent ?? '';
-        } else if (node.nodeType === Node.ELEMENT_NODE) {
-            const tag = (node as Element).tagName?.toUpperCase();
-            if (!SKIP_TAGS.has(tag)) {
-                text += getVisibleText(node as Element);
-            }
-        }
-    }
-    return text.trim();
-}
-
-/**
- * Clone an element and strip all non-content elements before MD conversion.
- */
-function cleanForMarkdown(el: Element): Element {
-    const clone = el.cloneNode(true) as Element;
-    const selectors = [
-        'script', 'style', 'noscript', 'svg', 'link', 'meta',
-        '[aria-hidden="true"]',
-        '[style*="display:none"]',
-        '[style*="display: none"]',
-        '[style*="visibility:hidden"]',
-        'img[src^="data:image/svg+xml"]',
-        'img[src^="data:image/png;base64"]',
-        'img[src^="data:image/jpeg;base64"]'
-    ].join(', ');
-    clone.querySelectorAll(selectors).forEach(n => n.remove());
-    return clone;
-}
 
 /**
  * Sanitize a string to be a safe filename.
@@ -170,37 +55,6 @@ function makeTurndown(): TurndownService {
     return td;
 }
 
-/** Cleanup excessive whitespace and blank lines */
-function cleanupMarkdown(markdown: string): string {
-    return markdown
-        .replace(/\n{2,}/g, '\n') // Collapse 2+ newlines into 1
-        .replace(/[ \t]+\n/g, '\n')  // Remove trailing spaces on lines
-        .trim();
-}
-
-/** Build YAML front-matter + filename */
-function buildDocument(
-    markdown: string,
-    pageTitle: string,
-    pageUrl: string,
-    sectionTitle: string,
-    clippedAt: string
-): { content: string; filename: string } {
-    const cleanedMarkdown = cleanupMarkdown(markdown);
-    const frontMatter = [
-        '---',
-        `title: "${pageTitle.replace(/"/g, '\\"')}"`,
-        `url: "${pageUrl}"`,
-        `clipped_at: ${clippedAt}`,
-        '---',
-        '',
-    ].join('\n');
-
-    const datePrefix = clippedAt.substring(0, 10);
-    const filename = `clip-${datePrefix}-${sanitizeFilename(sectionTitle)}.md`;
-    return { content: frontMatter + cleanedMarkdown, filename };
-}
-
 /** Trigger a file download in the browser */
 function downloadMarkdown(content: string, filename: string): void {
     const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' });
@@ -214,31 +68,61 @@ function downloadMarkdown(content: string, filename: string): void {
     URL.revokeObjectURL(url);
 }
 
+/** Cleanup excessive whitespace and blank lines */
+function cleanupMarkdown(markdown: string): string {
+    return markdown
+        .replace(/\n{2,}/g, '\n\n') // Standardize to max 2 newlines
+        .replace(/[ \t]+\n/g, '\n')  // Remove trailing spaces on lines
+        .trim();
+}
+
 /**
- * Clip the right-clicked frame (semantic block) as Markdown.
+ * Helper to build YAML front-matter from Defuddle metadata
  */
-function clipFrame(): void {
-    const target = lastRightClickedElement ?? document.body;
+function buildFrontMatter(resp: any): string {
+    const meta = [
+        '---',
+        `title: "${(resp.title || document.title || 'Untitled').replace(/"/g, '\\"')}"`,
+        `url: "${window.location.href}"`,
+    ];
 
-    // Skip if target is a non-content element, walk up to a real one
-    let safeTarget: Element = target;
-    while (SKIP_TAGS.has(safeTarget.tagName?.toUpperCase()) && safeTarget.parentElement) {
-        safeTarget = safeTarget.parentElement;
+    if (resp.author) meta.push(`author: "${resp.author.replace(/"/g, '\\"')}"`);
+    if (resp.site) meta.push(`site: "${resp.site}"`);
+    if (resp.published) meta.push(`published: "${resp.published}"`);
+    if (resp.description) meta.push(`description: "${resp.description.replace(/"/g, '\\"')}"`);
+    
+    meta.push(`clipped_at: ${new Date().toISOString()}`);
+    meta.push('---');
+    meta.push('');
+    
+    return meta.join('\n');
+}
+
+/**
+ * Clip the current page as Markdown using Defuddle.
+ */
+async function clipFrame(): Promise<void> {
+    try {
+        const resp = await new Defuddle(document, { 
+            markdown: true, 
+            separateMarkdown: true,
+            useAsync: true 
+        }).parseAsync();
+
+        const frontMatter = buildFrontMatter(resp);
+        const markdown = cleanupMarkdown(resp.contentMarkdown || resp.content || '');
+        const finalContent = frontMatter + markdown;
+        
+        const datePrefix = new Date().toISOString().substring(0, 10);
+        const filename = `clip-${datePrefix}-${sanitizeFilename(resp.title || 'article')}.md`;
+        
+        downloadMarkdown(finalContent, filename);
+    } catch (err) {
+        console.error('[Clipper] Defuddle extraction failed:', err);
+        // Minimal fallback if Defuddle fails
+        const md = `# ${document.title}\n\nExtraction failed. URL: ${window.location.href}`;
+        downloadMarkdown(md, `clip-failed-${Date.now()}.md`);
     }
-
-    const container = findBestContainer(safeTarget);
-    const cleaned = cleanForMarkdown(container);
-
-    const pageTitle = document.title || 'Untitled';
-    const pageUrl = window.location.href;
-    const clippedAt = new Date().toISOString();
-
-    const headingEl = cleaned.querySelector('h1, h2, h3, h4, h5, h6');
-    const sectionTitle = headingEl?.textContent?.trim() || pageTitle;
-
-    const markdown = makeTurndown().turndown(cleaned.outerHTML);
-    const { content, filename } = buildDocument(markdown, pageTitle, pageUrl, sectionTitle, clippedAt);
-    downloadMarkdown(content, filename);
 }
 
 /**
@@ -251,63 +135,51 @@ function clipSelection(): void {
         return;
     }
 
-    // Extract the selected HTML via a temporary container
     const fragment = sel.getRangeAt(0).cloneContents();
     const wrapper = document.createElement('div');
     wrapper.appendChild(fragment);
 
-    const cleaned = cleanForMarkdown(wrapper);
+    // Minor cleanup for selection
+    wrapper.querySelectorAll('script, style, noscript').forEach(n => n.remove());
 
     const pageTitle = document.title || 'Untitled';
     const pageUrl = window.location.href;
     const clippedAt = new Date().toISOString();
 
-    // Use first heading in selection, then first ~40 chars of text, then page title
-    const headingEl = cleaned.querySelector('h1, h2, h3, h4, h5, h6');
-    const rawText = cleaned.textContent?.trim().substring(0, 40) ?? '';
-    const sectionTitle = headingEl?.textContent?.trim() || rawText || pageTitle;
+    const markdown = makeTurndown().turndown(wrapper.outerHTML);
+    const cleanedMarkdown = cleanupMarkdown(markdown);
+    
+    const frontMatter = [
+        '---',
+        `title: "Selection from ${pageTitle.replace(/"/g, '\\"')}"`,
+        `url: "${pageUrl}"`,
+        `clipped_at: ${clippedAt}`,
+        '---',
+        '',
+    ].join('\n');
 
-    const markdown = makeTurndown().turndown(cleaned.outerHTML);
-    const { content, filename } = buildDocument(markdown, pageTitle, pageUrl, sectionTitle, clippedAt);
-    downloadMarkdown(content, filename);
+    const datePrefix = clippedAt.substring(0, 10);
+    const filename = `clip-selection-${datePrefix}.md`;
+    
+    downloadMarkdown(frontMatter + cleanedMarkdown, filename);
 }
 
 /**
- * Walk up the DOM from the last right-clicked element to find the closest
- * <article> container (tweet or article block).
- * This is the single source of truth used by both getClosestTweetUrl()
- * and getTweetDomText(), so changes to X.com's DOM structure only need
- * to be fixed in one place.
+ * Extract content as Markdown string (usually for Gemini).
  */
-function getClosestArticle(): Element | null {
-    let current = lastRightClickedElement;
-    while (current && current !== document.body) {
-        if (current.tagName === 'ARTICLE') {
-            return current;
-        }
-        current = current.parentElement;
+async function extractContent(): Promise<string> {
+    try {
+        const resp = await new Defuddle(document, { 
+            markdown: true, 
+            useAsync: true 
+        }).parseAsync();
+        
+        const markdown = resp.contentMarkdown || resp.content || '';
+        return `來自 ${resp.site || '網頁'} 的內容：\n\n${markdown}`;
+    } catch (err) {
+        console.error('[Clipper] Defuddle extraction failed:', err);
+        return `無法擷取內容：${document.title}\n網址：${window.location.href}`;
     }
-    return null;
-}
-
-/**
- * Get the URL of the closest tweet from the right-clicked element.
- * Uses getClosestArticle() then looks for a /status/ timestamp link inside it.
- */
-function getClosestTweetUrl(): string | null {
-    const article = getClosestArticle();
-    if (article) {
-        // Prefer tweet-typed articles (timeline); also works for article pages
-        const timeLink = article.querySelector('a[href*="/status/"]');
-        if (timeLink) {
-            return (timeLink as HTMLAnchorElement).href;
-        }
-    }
-    // Fallback: if we are already on a tweet permalink page
-    if (window.location.href.includes('/status/')) {
-        return window.location.href;
-    }
-    return null;
 }
 
 /**
@@ -375,39 +247,50 @@ function getAllImages(): string[] {
 }
 
 /**
- * Extract visible text from the closest tweet/article container
+ * Extract visible text from the closest article container (legacy fallback)
  */
-function getTweetDomText(): string | null {
-    let current = lastRightClickedElement;
-    while (current && current !== document.body) {
-        if (current.tagName === 'ARTICLE') {
-            return getVisibleText(current);
-        }
-        if (current.parentElement) {
-            current = current.parentElement;
-        } else {
-            break;
+function getVisibleText(el: Element): string {
+    let text = '';
+    for (const node of el.childNodes) {
+        if (node.nodeType === Node.TEXT_NODE) {
+            text += node.textContent ?? '';
+        } else if (node.nodeType === Node.ELEMENT_NODE) {
+            const tag = (node as Element).tagName?.toUpperCase();
+            if (!['SCRIPT', 'STYLE', 'NOSCRIPT'].includes(tag)) {
+                text += getVisibleText(node as Element);
+            }
         }
     }
-    return null;
+    return text.trim();
 }
 
 // Listen for commands from the background script
 chrome.runtime.onMessage.addListener((message: { action: string; url?: string }, sender, sendResponse) => {
     console.log('[Clipper] Message received:', message.action);
+    
     if (message.action === 'clip-frame') {
-        clipFrame();
-    } else if (message.action === 'clip-selection') {
+        clipFrame().then(() => sendResponse({ status: 'ok' }));
+        return true; // Async response
+    } 
+    
+    if (message.action === 'clip-selection') {
         clipSelection();
-    } else if (message.action === 'get-all-images') {
+        sendResponse({ status: 'ok' });
+        return false;
+    } 
+    
+    if (message.action === 'extract-content') {
+        extractContent().then(text => sendResponse({ text }));
+        return true; // Async response
+    }
+    
+    if (message.action === 'get-all-images') {
         const images = getAllImages();
         sendResponse({ urls: images });
-    } else if (message.action === 'get-tweet-url') {
-        const url = getClosestTweetUrl();
-        sendResponse({ url: url });
-    } else if (message.action === 'get-tweet-dom-text') {
-        const text = getTweetDomText();
-        sendResponse({ text: text });
+        return false;
     }
-    return true; // Keep channel open for async if needed
+
+    // Handle unknown actions
+    sendResponse({ error: 'Unknown action' });
+    return false;
 });

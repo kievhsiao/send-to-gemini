@@ -20,36 +20,9 @@ chrome.storage.onChanged.addListener((changes, area) => {
     }
 });
 
-/** Structured result from fetchXPostText; separates data from display. */
-interface XPostResult {
-    /** Plain tweet text (or article body from DOM). */
+/** Structured result from Defuddle content script */
+interface ExtractionResult {
     text: string;
-    /** Author's display name or handle. */
-    author: string;
-    /** True when the API returned an article link instead of tweet text. */
-    isArticleLink: boolean;
-}
-
-async function fetchXPostText(url: string): Promise<XPostResult | null> {
-    try {
-        const match = url.match(/https?:\/\/(?:x\.com|twitter\.com)\/([^/]+)\/status\/(\d+)/);
-        if (!match) return null;
-        const apiUrl = `https://api.vxtwitter.com/${match[1]}/status/${match[2]}`;
-        const response = await fetch(apiUrl);
-        if (!response.ok) throw new Error(`FxTwitter API Error: ${response.status}`);
-        const json = await response.json();
-        const text: string | undefined = json?.tweet?.text || json?.text;
-        const author: string = json?.tweet?.author?.name || match[1];
-        if (!text) return null;
-        // Detect article links: the API returns a bare URL (http or https) as the
-        // entire text content. Check for /i/article/ regardless of scheme.
-        const trimmed = text.trim();
-        const isArticleLink = /^https?:\/\//.test(trimmed) && trimmed.includes('/i/article/');
-        return { text, author, isArticleLink };
-    } catch (e) {
-        console.error('[Background] fetchXPostText failed:', e);
-        return null;
-    }
 }
 
 function updateContextMenus(prompts: string[], gems: Gem[]) {
@@ -257,22 +230,23 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
 
 async function sendToContentScript(tabId: number, message: { action: string;[key: string]: unknown }): Promise<unknown> {
     if (!injectedTabs.has(tabId)) {
-        // First attempt: try messaging without injection (auto-injected pages, or
-        // a page that already has the script from a previous visit in this session)
         try {
             const result = await chrome.tabs.sendMessage(tabId, message);
-            injectedTabs.add(tabId); // messaging succeeded → script already present
-            return result;
-        } catch {
-            // Script not loaded → inject, then retry once
-            await chrome.scripting.executeScript({ target: { tabId }, files: ['clipper_content.js'] });
-            await new Promise(r => setTimeout(r, 200));
             injectedTabs.add(tabId);
-            return await chrome.tabs.sendMessage(tabId, message);
+            return result;
+        } catch (err: any) {
+            // Only retry on "Receiving end does not exist" (Standard content script missing error)
+            const msg = err?.message || '';
+            if (msg.includes('Receiving end does not exist')) {
+                await chrome.scripting.executeScript({ target: { tabId }, files: ['clipper_content.js'] });
+                await new Promise(r => setTimeout(r, 200));
+                injectedTabs.add(tabId);
+                return await chrome.tabs.sendMessage(tabId, message);
+            }
+            // If it's a port closed error, do NOT retry. Re-throw so caller knows the request was interrupted.
+            throw err;
         }
     }
-
-    // Tab is already in cache → content script is present, message directly
     return await chrome.tabs.sendMessage(tabId, message);
 }
 
@@ -301,37 +275,21 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
         let destinationUrl = 'https://gemini.google.com/app';
         let pendingGeminiImage = await prepareMediaData(info);
 
-        // --- X.com AUTO-FETCH LOGIC ---
+        // --- CONTENT AUTO-FETCH LOGIC (including X.com) ---
         let baseText = info.selectionText;
 
-        // Improvement #3: Honour explicit user text selection even from X sub-menu.
-        // Only auto-fetch when there is nothing selected (regardless of forceXFetch).
-        if (!baseText && (forceXFetch || tab?.url?.match(/https?:\/\/(x|twitter)\.com/))) {
+        if (!baseText && tab?.id) {
             try {
-                let tweetUrl = info.linkUrl && info.linkUrl.includes('/status/') ? info.linkUrl : null;
-                if (!tweetUrl && tab?.id) {
-                    const response = await sendToContentScript(tab.id, { action: 'get-tweet-url' }) as { url?: string };
-                    tweetUrl = response?.url || info.pageUrl;
-                }
-
-                if (tweetUrl) {
-                    // Improvement #2: use structured result — no string matching on display text
-                    const result = await fetchXPostText(tweetUrl);
-                    if (result?.isArticleLink && tab?.id) {
-                        // API returned an article link → fall back to DOM text
-                        const domResp = await sendToContentScript(tab.id, { action: 'get-tweet-dom-text' }) as { text?: string };
-                        baseText = domResp?.text
-                            ? `來自 X 的文章內容：\n\n${domResp.text}`
-                            : `來自 ${result.author} 的完整推文：\n\n${result.text}`;
-                    } else if (result) {
-                        baseText = `來自 ${result.author} 的完整推文：\n\n${result.text}`;
-                    }
+                // Simplified: use Defuddle (via 'extract-content') for all cases
+                const response = await sendToContentScript(tab.id, { action: 'extract-content' }) as { text?: string };
+                if (response?.text) {
+                    baseText = response.text;
                 }
             } catch (err) {
-                console.error('[Background] Failed to auto-fetch X.com tweet:', err);
+                console.error('[Background] Failed to auto-extract content:', err);
             }
         }
-        // --- END X.com LOGIC ---
+        // --- END AUTO-FETCH LOGIC ---
 
         if (menuId === 'gemini-direct') {
             if (baseText) fullText = baseText;
