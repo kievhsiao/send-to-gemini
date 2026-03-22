@@ -273,6 +273,31 @@ function clipSelection(): void {
 }
 
 /**
+ * Get the closest tweet URL from the right-clicked element
+ */
+function getClosestTweetUrl(): string | null {
+    let current = lastRightClickedElement;
+    while (current && current !== document.body) {
+        if (current.tagName === 'ARTICLE' && current.getAttribute('data-testid') === 'tweet') {
+            const timeLink = current.querySelector('a[href*="/status/"]');
+            if (timeLink) {
+                return (timeLink as HTMLAnchorElement).href;
+            }
+        }
+        if (current.parentElement) {
+            current = current.parentElement;
+        } else {
+            break;
+        }
+    }
+    // Fallback if we are on a tweet page already
+    if (window.location.href.includes('/status/')) {
+        return window.location.href;
+    }
+    return null;
+}
+
+/**
  * Gather all image sources and return them.
  * Checks standard src, lazy-loading data attributes, and srcset.
  */
@@ -329,12 +354,29 @@ function getAllImages(): string[] {
             }
         });
     }
-
-    collectFromElement(document);
+     collectFromElement(document);
 
     const result = Array.from(urls);
     console.log(`[Clipper] Found ${result.length} unique image URLs.`);
     return result;
+}
+
+/**
+ * Extract visible text from the closest tweet/article container
+ */
+function getTweetDomText(): string | null {
+    let current = lastRightClickedElement;
+    while (current && current !== document.body) {
+        if (current.tagName === 'ARTICLE') {
+            return getVisibleText(current);
+        }
+        if (current.parentElement) {
+            current = current.parentElement;
+        } else {
+            break;
+        }
+    }
+    return null;
 }
 
 // Listen for commands from the background script
@@ -347,6 +389,12 @@ chrome.runtime.onMessage.addListener((message: { action: string; url?: string },
     } else if (message.action === 'get-all-images') {
         const images = getAllImages();
         sendResponse({ urls: images });
+    } else if (message.action === 'get-tweet-url') {
+        const url = getClosestTweetUrl();
+        sendResponse({ url: url });
+    } else if (message.action === 'get-tweet-dom-text') {
+        const text = getTweetDomText();
+        sendResponse({ text: text });
     }
     return true; // Keep channel open for async if needed
 });

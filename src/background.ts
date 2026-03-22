@@ -20,9 +20,28 @@ chrome.storage.onChanged.addListener((changes, area) => {
     }
 });
 
+async function fetchXPostText(url: string): Promise<string | null> {
+    try {
+        const match = url.match(/https?:\/\/(?:x\.com|twitter\.com)\/([^/]+)\/status\/(\d+)/);
+        if (!match) return null;
+        const apiDomain = 'api.vxtwitter.com';
+        const apiUrl = `https://${apiDomain}/${match[1]}/status/${match[2]}`;
+        const response = await fetch(apiUrl);
+        if (!response.ok) throw new Error("FxTwitter API Error");
+        const json = await response.json();
+        const text = json?.tweet?.text || json?.text; 
+        const author = json?.tweet?.author?.name || match[1];
+        if (text) return `來自 ${author} 的完整推文：\n\n${text}`;
+        return null; // fallback
+    } catch(e) {
+        console.error(e);
+        return null;
+    }
+}
+
 function updateContextMenus(prompts: string[], gems: Gem[]) {
     chrome.contextMenus.removeAll(() => {
-        // 1. Direct Send Action
+        // 1. Direct Send Action (requires selection)
         chrome.contextMenus.create({
             id: 'gemini-direct',
             title: '直接傳送 (Direct Send)',
@@ -35,7 +54,7 @@ function updateContextMenus(prompts: string[], gems: Gem[]) {
             contexts: ['selection', 'image']
         });
 
-        // 2. Prompt Actions
+        // 2. Prompt Actions (requires selection)
         prompts.forEach((prompt, index) => {
             chrome.contextMenus.create({
                 id: `gemini-prompt-${index}`,
@@ -44,7 +63,7 @@ function updateContextMenus(prompts: string[], gems: Gem[]) {
             });
         });
 
-        // 3. Gem Actions
+        // 3. Gem Actions (requires selection)
         if (gems && gems.length > 0) {
             chrome.contextMenus.create({
                 id: 'separator-2',
@@ -60,6 +79,65 @@ function updateContextMenus(prompts: string[], gems: Gem[]) {
                 });
             });
         }
+
+        // ── X.com 專屬入口 (page context → 不需選取文字也能出現) ──────────────
+        // Parent menu item
+        chrome.contextMenus.create({
+            id: 'gemini-x-parent',
+            title: '傳送此篇推文至 Gemini',
+            contexts: ['page', 'selection'],
+            documentUrlPatterns: ['*://x.com/*', '*://twitter.com/*']
+        });
+
+        // X.com: Direct send child
+        chrome.contextMenus.create({
+            id: 'gemini-x-direct',
+            parentId: 'gemini-x-parent',
+            title: '直接傳送 (Direct Send)',
+            contexts: ['page', 'selection'],
+            documentUrlPatterns: ['*://x.com/*', '*://twitter.com/*']
+        });
+
+        // X.com: Prompt children
+        if (prompts.length > 0) {
+            chrome.contextMenus.create({
+                id: 'sep-x-prompts',
+                parentId: 'gemini-x-parent',
+                type: 'separator',
+                contexts: ['page', 'selection'],
+                documentUrlPatterns: ['*://x.com/*', '*://twitter.com/*']
+            });
+            prompts.forEach((prompt, index) => {
+                chrome.contextMenus.create({
+                    id: `gemini-x-prompt-${index}`,
+                    parentId: 'gemini-x-parent',
+                    title: prompt.length > 25 ? prompt.substring(0, 25) + '...' : prompt,
+                    contexts: ['page', 'selection'],
+                    documentUrlPatterns: ['*://x.com/*', '*://twitter.com/*']
+                });
+            });
+        }
+
+        // X.com: Gem children
+        if (gems && gems.length > 0) {
+            chrome.contextMenus.create({
+                id: 'sep-x-gems',
+                parentId: 'gemini-x-parent',
+                type: 'separator',
+                contexts: ['page', 'selection'],
+                documentUrlPatterns: ['*://x.com/*', '*://twitter.com/*']
+            });
+            gems.forEach((gem, index) => {
+                chrome.contextMenus.create({
+                    id: `gemini-x-gem-${index}`,
+                    parentId: 'gemini-x-parent',
+                    title: `送至 Gem: ${gem.name}`,
+                    contexts: ['page', 'selection'],
+                    documentUrlPatterns: ['*://x.com/*', '*://twitter.com/*']
+                });
+            });
+        }
+        // ─────────────────────────────────────────────────────────────────────
 
         // 4. Web Clipper
         chrome.contextMenus.create({
@@ -186,9 +264,22 @@ async function sendToContentScript(tabId: number, message: { action: string;[key
 }
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
-    const menuId = info.menuItemId.toString();
+    let menuId = info.menuItemId.toString();
 
-    if (menuId.startsWith('gemini-')) {
+    // ── Normalize X.com sub-menu IDs to their generic equivalents ────────────
+    // gemini-x-direct        → gemini-direct
+    // gemini-x-prompt-N      → gemini-prompt-N
+    // gemini-x-gem-N         → gemini-gem-N
+    // For all X items, we also force the X auto-fetch path even if text is selected.
+    let forceXFetch = false;
+    if (menuId.startsWith('gemini-x-')) {
+        forceXFetch = true;
+        menuId = menuId.replace('gemini-x-', 'gemini-');
+        // gemini-direct is the stripped result for gemini-x-direct
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
+    if (menuId.startsWith('gemini-') && !menuId.startsWith('gemini-x-')) {
         const data = await chrome.storage.sync.get([STORAGE_KEY_PROMPTS, STORAGE_KEY_GEMS]);
         const prompts: string[] = data[STORAGE_KEY_PROMPTS] || DEFAULT_PROMPTS;
         const gems: Gem[] = data[STORAGE_KEY_GEMS] || [];
@@ -197,14 +288,47 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
         let destinationUrl = 'https://gemini.google.com/app';
         let pendingGeminiImage = await prepareMediaData(info);
 
+        // --- X.com AUTO-FETCH LOGIC ---
+        let baseText = info.selectionText;
+        
+        // Trigger if: forceXFetch (clicked X menu), OR on X.com without selection
+        if (forceXFetch || (!baseText && tab?.url && tab.url.match(/https?:\/\/(x|twitter)\.com/))) {
+            try {
+                let tweetUrl = info.linkUrl && info.linkUrl.includes('/status/') ? info.linkUrl : null;
+                if (!tweetUrl && tab?.id) {
+                    const response = await sendToContentScript(tab.id, { action: 'get-tweet-url' }) as { url?: string };
+                    tweetUrl = response?.url || info.pageUrl;
+                }
+
+                if (tweetUrl) {
+                    const fetchedText = await fetchXPostText(tweetUrl);
+                    
+                    // If FxTwitter API gives us an article link, fallback to DOM
+                    if (fetchedText && fetchedText.includes('/i/article/') && tab?.id) {
+                         const domResp = await sendToContentScript(tab.id, { action: 'get-tweet-dom-text' }) as { text?: string };
+                         if (domResp?.text) {
+                             baseText = `來自 X 的文章內容：\n\n${domResp.text}`;
+                         } else {
+                             baseText = fetchedText;
+                         }
+                    } else if (fetchedText) {
+                         baseText = fetchedText;
+                    }
+                }
+            } catch (err) {
+                console.error('[Background] Failed to auto-fetch X.com tweet:', err);
+            }
+        }
+        // --- END X.com LOGIC ---
+
         if (menuId === 'gemini-direct') {
-            if (info.selectionText) fullText = info.selectionText;
+            if (baseText) fullText = baseText;
         } else if (menuId.startsWith('gemini-prompt-')) {
             const index = parseInt(menuId.replace('gemini-prompt-', ''), 10);
             const selectedPrompt = prompts[index];
             if (!selectedPrompt) return;
-            if (info.selectionText) {
-                fullText = `${selectedPrompt}\n\n以下為輸入內容：\n${info.selectionText}`;
+            if (baseText) {
+                fullText = `${selectedPrompt}\n\n以下為輸入內容：\n${baseText}`;
             } else {
                 fullText = selectedPrompt;
             }
@@ -213,7 +337,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
             const selectedGem = gems[index];
             if (!selectedGem) return;
             destinationUrl = `https://gemini.google.com/gem/${selectedGem.id}`;
-            if (info.selectionText) fullText = info.selectionText;
+            if (baseText) fullText = baseText;
         }
 
         if (fullText || pendingGeminiImage) {
