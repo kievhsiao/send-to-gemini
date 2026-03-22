@@ -175,10 +175,13 @@ async function extractContent(): Promise<string> {
         }).parseAsync();
         
         const markdown = resp.contentMarkdown || resp.content || '';
-        return `來自 ${resp.site || '網頁'} 的內容：\n\n${markdown}`;
+        if (!markdown) return '';
+        
+        const siteName = resp.site || '網頁';
+        return `來自 ${siteName} 的內容：\n\n${markdown}`;
     } catch (err) {
         console.error('[Clipper] Defuddle extraction failed:', err);
-        return `無法擷取內容：${document.title}\n網址：${window.location.href}`;
+        return ''; // Return empty string on failure to avoid polluting Gemini prompt
     }
 }
 
@@ -244,24 +247,6 @@ function getAllImages(): string[] {
     const result = Array.from(urls);
     console.log(`[Clipper] Found ${result.length} unique image URLs.`);
     return result;
-}
-
-/**
- * Extract visible text from the closest article container (legacy fallback)
- */
-function getVisibleText(el: Element): string {
-    let text = '';
-    for (const node of el.childNodes) {
-        if (node.nodeType === Node.TEXT_NODE) {
-            text += node.textContent ?? '';
-        } else if (node.nodeType === Node.ELEMENT_NODE) {
-            const tag = (node as Element).tagName?.toUpperCase();
-            if (!['SCRIPT', 'STYLE', 'NOSCRIPT'].includes(tag)) {
-                text += getVisibleText(node as Element);
-            }
-        }
-    }
-    return text.trim();
 }
 
 // Listen for commands from the background script
