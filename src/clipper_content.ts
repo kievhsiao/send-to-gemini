@@ -273,24 +273,37 @@ function clipSelection(): void {
 }
 
 /**
- * Get the closest tweet URL from the right-clicked element
+ * Walk up the DOM from the last right-clicked element to find the closest
+ * <article> container (tweet or article block).
+ * This is the single source of truth used by both getClosestTweetUrl()
+ * and getTweetDomText(), so changes to X.com's DOM structure only need
+ * to be fixed in one place.
  */
-function getClosestTweetUrl(): string | null {
+function getClosestArticle(): Element | null {
     let current = lastRightClickedElement;
     while (current && current !== document.body) {
-        if (current.tagName === 'ARTICLE' && current.getAttribute('data-testid') === 'tweet') {
-            const timeLink = current.querySelector('a[href*="/status/"]');
-            if (timeLink) {
-                return (timeLink as HTMLAnchorElement).href;
-            }
+        if (current.tagName === 'ARTICLE') {
+            return current;
         }
-        if (current.parentElement) {
-            current = current.parentElement;
-        } else {
-            break;
+        current = current.parentElement;
+    }
+    return null;
+}
+
+/**
+ * Get the URL of the closest tweet from the right-clicked element.
+ * Uses getClosestArticle() then looks for a /status/ timestamp link inside it.
+ */
+function getClosestTweetUrl(): string | null {
+    const article = getClosestArticle();
+    if (article) {
+        // Prefer tweet-typed articles (timeline); also works for article pages
+        const timeLink = article.querySelector('a[href*="/status/"]');
+        if (timeLink) {
+            return (timeLink as HTMLAnchorElement).href;
         }
     }
-    // Fallback if we are on a tweet page already
+    // Fallback: if we are already on a tweet permalink page
     if (window.location.href.includes('/status/')) {
         return window.location.href;
     }

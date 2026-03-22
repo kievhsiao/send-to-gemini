@@ -20,21 +20,34 @@ chrome.storage.onChanged.addListener((changes, area) => {
     }
 });
 
-async function fetchXPostText(url: string): Promise<string | null> {
+/** Structured result from fetchXPostText; separates data from display. */
+interface XPostResult {
+    /** Plain tweet text (or article body from DOM). */
+    text: string;
+    /** Author's display name or handle. */
+    author: string;
+    /** True when the API returned an article link instead of tweet text. */
+    isArticleLink: boolean;
+}
+
+async function fetchXPostText(url: string): Promise<XPostResult | null> {
     try {
         const match = url.match(/https?:\/\/(?:x\.com|twitter\.com)\/([^/]+)\/status\/(\d+)/);
         if (!match) return null;
-        const apiDomain = 'api.vxtwitter.com';
-        const apiUrl = `https://${apiDomain}/${match[1]}/status/${match[2]}`;
+        const apiUrl = `https://api.vxtwitter.com/${match[1]}/status/${match[2]}`;
         const response = await fetch(apiUrl);
-        if (!response.ok) throw new Error("FxTwitter API Error");
+        if (!response.ok) throw new Error(`FxTwitter API Error: ${response.status}`);
         const json = await response.json();
-        const text = json?.tweet?.text || json?.text; 
-        const author = json?.tweet?.author?.name || match[1];
-        if (text) return `來自 ${author} 的完整推文：\n\n${text}`;
-        return null; // fallback
-    } catch(e) {
-        console.error(e);
+        const text: string | undefined = json?.tweet?.text || json?.text;
+        const author: string = json?.tweet?.author?.name || match[1];
+        if (!text) return null;
+        // Detect article links: the API returns a bare URL (http or https) as the
+        // entire text content. Check for /i/article/ regardless of scheme.
+        const trimmed = text.trim();
+        const isArticleLink = /^https?:\/\//.test(trimmed) && trimmed.includes('/i/article/');
+        return { text, author, isArticleLink };
+    } catch (e) {
+        console.error('[Background] fetchXPostText failed:', e);
         return null;
     }
 }
@@ -290,9 +303,10 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
 
         // --- X.com AUTO-FETCH LOGIC ---
         let baseText = info.selectionText;
-        
-        // Trigger if: forceXFetch (clicked X menu), OR on X.com without selection
-        if (forceXFetch || (!baseText && tab?.url && tab.url.match(/https?:\/\/(x|twitter)\.com/))) {
+
+        // Improvement #3: Honour explicit user text selection even from X sub-menu.
+        // Only auto-fetch when there is nothing selected (regardless of forceXFetch).
+        if (!baseText && (forceXFetch || tab?.url?.match(/https?:\/\/(x|twitter)\.com/))) {
             try {
                 let tweetUrl = info.linkUrl && info.linkUrl.includes('/status/') ? info.linkUrl : null;
                 if (!tweetUrl && tab?.id) {
@@ -301,18 +315,16 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
                 }
 
                 if (tweetUrl) {
-                    const fetchedText = await fetchXPostText(tweetUrl);
-                    
-                    // If FxTwitter API gives us an article link, fallback to DOM
-                    if (fetchedText && fetchedText.includes('/i/article/') && tab?.id) {
-                         const domResp = await sendToContentScript(tab.id, { action: 'get-tweet-dom-text' }) as { text?: string };
-                         if (domResp?.text) {
-                             baseText = `來自 X 的文章內容：\n\n${domResp.text}`;
-                         } else {
-                             baseText = fetchedText;
-                         }
-                    } else if (fetchedText) {
-                         baseText = fetchedText;
+                    // Improvement #2: use structured result — no string matching on display text
+                    const result = await fetchXPostText(tweetUrl);
+                    if (result?.isArticleLink && tab?.id) {
+                        // API returned an article link → fall back to DOM text
+                        const domResp = await sendToContentScript(tab.id, { action: 'get-tweet-dom-text' }) as { text?: string };
+                        baseText = domResp?.text
+                            ? `來自 X 的文章內容：\n\n${domResp.text}`
+                            : `來自 ${result.author} 的完整推文：\n\n${result.text}`;
+                    } else if (result) {
+                        baseText = `來自 ${result.author} 的完整推文：\n\n${result.text}`;
                     }
                 }
             } catch (err) {
