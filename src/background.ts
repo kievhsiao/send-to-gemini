@@ -66,54 +66,39 @@ function updateContextMenus(prompts: string[], gems: Gem[]) {
             });
         }
 
-        // ── 全網頁全文擷取入口 (page context → 不需選取文字也能出現) ──────────
-        // Parent menu item
-        chrome.contextMenus.create({
-            id: 'gemini-page-parent',
-            title: '傳送此網頁內容至 Gemini',
-            contexts: ['page', 'selection']
-        });
-
-        // Page Content: Direct send child
+        // ── 全網頁全文擷取（page context 頂層項目，不選取文字時直接顯示）────
         chrome.contextMenus.create({
             id: 'gemini-page-direct',
-            parentId: 'gemini-page-parent',
             title: '直接傳送 (Direct Send)',
-            contexts: ['page', 'selection']
+            contexts: ['page']
         });
 
-        // Page Content: Prompt children
         if (prompts.length > 0) {
             chrome.contextMenus.create({
                 id: 'sep-page-prompts',
-                parentId: 'gemini-page-parent',
                 type: 'separator',
-                contexts: ['page', 'selection']
+                contexts: ['page']
             });
             prompts.forEach((prompt, index) => {
                 chrome.contextMenus.create({
                     id: `gemini-page-prompt-${index}`,
-                    parentId: 'gemini-page-parent',
-                    title: prompt.length > 25 ? prompt.substring(0, 25) + '...' : prompt,
-                    contexts: ['page', 'selection']
+                    title: prompt.length > 20 ? prompt.substring(0, 20) + '...' : prompt,
+                    contexts: ['page']
                 });
             });
         }
 
-        // Page Content: Gem children
         if (gems && gems.length > 0) {
             chrome.contextMenus.create({
                 id: 'sep-page-gems',
-                parentId: 'gemini-page-parent',
                 type: 'separator',
-                contexts: ['page', 'selection']
+                contexts: ['page']
             });
             gems.forEach((gem, index) => {
                 chrome.contextMenus.create({
                     id: `gemini-page-gem-${index}`,
-                    parentId: 'gemini-page-parent',
                     title: `送至 Gem: ${gem.name}`,
-                    contexts: ['page', 'selection']
+                    contexts: ['page']
                 });
             });
         }
