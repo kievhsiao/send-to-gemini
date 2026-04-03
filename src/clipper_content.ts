@@ -104,6 +104,7 @@ function buildFrontMatter(resp: any): string {
 async function clipFrame(): Promise<void> {
     try {
         const resp = await new Defuddle(document, { 
+            url: window.location.href, // Explicitly pass URL to avoid "Invalid URL" errors
             markdown: true, 
             separateMarkdown: true,
             useAsync: true 
@@ -167,9 +168,11 @@ function clipSelection(): void {
 /**
  * Extract content as Markdown string (usually for Gemini).
  */
-async function extractContent(): Promise<string> {
+async function extractContent(overrideUrl?: string): Promise<string> {
     try {
+        const url = overrideUrl || window.location.href;
         const resp = await new Defuddle(document, { 
+            url: url, // Use override URL or current page URL
             markdown: true, 
             useAsync: true 
         }).parseAsync();
@@ -265,7 +268,7 @@ chrome.runtime.onMessage.addListener((message: { action: string; url?: string },
     } 
     
     if (message.action === 'extract-content') {
-        extractContent().then(text => sendResponse({ text }));
+        extractContent(message.url).then(text => sendResponse({ text }));
         return true; // Async response
     }
     

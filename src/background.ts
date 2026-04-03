@@ -260,7 +260,11 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
         if (shouldAutoFetch && tab?.id) {
             try {
                 // Simplified: use Defuddle (via 'extract-content') for all cases
-                const response = await sendToContentScript(tab.id, { action: 'extract-content' }) as { text?: string };
+                // Pass tab.url to the content script to satisfy Defuddle's URL requirements
+                const response = await sendToContentScript(tab.id, { 
+                    action: 'extract-content',
+                    url: tab.url 
+                }) as { text?: string };
                 if (response?.text) {
                     baseText = response.text;
                 }
