@@ -27,80 +27,123 @@ document.addEventListener('contextmenu', (e: MouseEvent) => {
 
 /**
  * Helper to find the Facebook post container relative to a click.
- * Staff Level 2.2: Definitive Fuzzy Matching + Center-Screen Fallback.
+ * Staff Level 4.1: Unified Scoring Engine with expanded container detection.
+ * Handles Timeline feed items (via aria-posinset) and Permalink posts.
  */
 function findFacebookPostContainer(target: Element | null, x: number, y: number): Element | null {
-    const isMainPost = (el: Element) => {
+    const scoreCandidate = (el: Element): number => {
         const role = el.getAttribute('role');
-        if (role !== 'article' && role !== 'dialog') return false;
+        const hasPosInSet = el.hasAttribute('aria-posinset');
         
-        // 1. Structural Markers (Highly stable)
-        if (el.hasAttribute('aria-posinset')) return true;
+        // Timeline shortcut: If it has aria-posinset, it's definitely a main post container.
+        if (hasPosInSet) return 1000;
         
-        // 2. Content Markers (Deep check for message or image containers)
-        if (el.querySelector('[data-ad-preview="message"], [data-ad-comet-preview="message"], [data-testid="post_message"]')) return true;
+        // Standard role check
+        if (role !== 'article' && role !== 'dialog') return -100;
         
-        // 3. Featured/Pinned Markers
-        if (el.getAttribute('data-testid') === 'fb-feed-item' || el.hasAttribute('data-bt')) return true;
+        let s = 0;
+        // 2. 內容標記 (通常僅出現在主貼文)
+        if (el.querySelector('[data-ad-preview="message"], [data-ad-comet-preview="message"]')) s += 50;
+        if (el.querySelector('[data-testid="post_message"]')) s += 40;
+        
+        // 3. 結構標記
+        if (el.hasAttribute('aria-labelledby') || el.hasAttribute('aria-describedby')) s += 30;
 
-        // 4. Broad check: Many posts have specific layout classes but always have an aria-label or describedby related to the user's name
-        if (el.hasAttribute('aria-describedby') || el.hasAttribute('aria-labelledby')) return true;
+        // 4. 文字特徵
+        const label = (el.getAttribute('aria-label') || '').toLowerCase();
+        if (label.includes('post')) s += 20;
 
-        return false;
+        // 5. 負向標記 (排斥留言、回覆)
+        // Only apply strong negative scores to non-posinset articles (Permalinks)
+        if (label.includes('comment') || label.includes('reply')) s -= 60;
+        if (el.classList.contains('comment') || el.closest('[role="complementary"]')) s -= 40;
+
+        return s;
     };
 
-    // 1. Direct Context Search (Upward from target)
-    let current: Element | null = target;
-    while (current) {
-        const container = current.closest('div[role="article"], div[role="dialog"]');
+    // --- 三階段定位策略 ---
+
+    // 1. Path Lookup (向上尋找評分最高的容器)
+    let curr: Element | null = target;
+    while (curr) {
+        const container = curr.closest('[role="article"], [role="dialog"], [aria-posinset]');
         if (!container) break;
-        if (isMainPost(container)) return container;
-        current = container.parentElement;
+        if (scoreCandidate(container) >= 20) return container;
+        curr = container.parentElement;
     }
 
-    // 2. Coordinate-Based Fuzzy Scan (Physical viewport overlap)
-    // We use a much larger 100px buffer to handle gap/margin clicks.
-    const allArticles = Array.from(document.querySelectorAll('div[role="article"], div[role="dialog"]'))
-                            .filter(art => isMainPost(art));
-
-    if (y > 0 && allArticles.length > 0) {
-        let bestMatch: Element | null = null;
-        let minDistance = Infinity;
-
-        for (const art of allArticles) {
-            const rect = art.getBoundingClientRect();
-            // Check vertical overlap with a generous 100px buffer
-            if (y >= rect.top - 100 && y <= rect.bottom + 100) {
-                const centerY = rect.top + rect.height / 2;
-                const distance = Math.abs(y - centerY);
-                if (distance < minDistance) {
-                    minDistance = distance;
-                    bestMatch = art;
-                }
-            }
+    // 2. Point Lookup (座標命中)
+    if (x > 0 && y > 0) {
+        const hitEl = document.elementFromPoint(x, y);
+        let hitCurr: Element | null = hitEl;
+        while (hitCurr) {
+            const container = hitCurr.closest('[role="article"], [role="dialog"], [aria-posinset]');
+            if (!container) break;
+            if (scoreCandidate(container) >= 20) return container;
+            hitCurr = container.parentElement;
         }
-        if (bestMatch) return bestMatch;
     }
 
-    // 3. Ultimate Fallback: Target the article closest to the screen center
-    // This is safer than the "First Post" bug because it's based on where the user is looking.
-    if (allArticles.length > 0) {
-        const viewportCenterY = window.innerHeight / 2;
-        let closestToCenter: Element | null = null;
-        let minCenterDistance = Infinity;
+    // 3. Viewport Selection (全域掃描分數 > 0 且最顯眼的文章)
+    const allCandidates = Array.from(document.querySelectorAll('[role="article"], [role="dialog"], [aria-posinset]'));
+    const scoredList = allCandidates
+        .map(el => ({ el, s: scoreCandidate(el) }))
+        .filter(c => c.s >= 20);
 
-        for (const art of allArticles) {
-            const rect = art.getBoundingClientRect();
-            const centerY = rect.top + rect.height / 2;
-            const distance = Math.abs(viewportCenterY - centerY);
-            if (distance < minCenterDistance) {
-                minCenterDistance = distance;
-                closestToCenter = art;
+    if (scoredList.length > 0) {
+        if (y > 0) {
+            let best = scoredList[0].el;
+            let minD = Infinity;
+            for (const item of scoredList) {
+                const rect = item.el.getBoundingClientRect();
+                const d = (y >= rect.top && y <= rect.bottom) ? 0 : Math.min(Math.abs(y - rect.top), Math.abs(y - rect.bottom));
+                if (d < minD) { minD = d; best = item.el; }
+                if (d === 0) break;
             }
+            return best;
+        } else {
+            const centerY = window.innerHeight / 2;
+            let best = scoredList[0].el;
+            let minD = Infinity;
+            for (const item of scoredList) {
+                const rect = item.el.getBoundingClientRect();
+                const d = Math.abs(centerY - (rect.top + rect.height / 2));
+                if (d < minD) { minD = d; best = item.el; }
+            }
+            return best;
         }
-        return closestToCenter;
     }
 
+    return null;
+}
+
+
+
+
+
+
+/**
+ * Helper to find the X.com (Twitter) tweet container.
+ */
+function findXPostContainer(target: Element | null, x: number, y: number): Element | null {
+    // 1. Direct path via data-testid
+    const byClosest = target?.closest('article[data-testid="tweet"]');
+    if (byClosest) return byClosest;
+
+    // 2. elementFromPoint fallback
+    if (x > 0 && y > 0) {
+        const hitEl = document.elementFromPoint(x, y);
+        const byHit = hitEl?.closest('article[data-testid="tweet"]');
+        if (byHit) return byHit;
+    }
+
+    // 3. Viewport fallback — only return if y is actually inside a tweet rect
+    const allTweets = Array.from(document.querySelectorAll('article[data-testid="tweet"]'));
+    for (const tweet of allTweets) {
+        const rect = tweet.getBoundingClientRect();
+        if (y >= rect.top && y <= rect.bottom) return tweet;
+    }
+    // Cannot determine which tweet was targeted — return null so Defuddle can handle
     return null;
 }
 
@@ -210,8 +253,10 @@ async function extractPageContent(
     // --- Special Handling for Facebook ---
     if (url.includes('facebook.com')) {
         const container = findFacebookPostContainer(lastRightClickedElement, lastClickX, lastClickY);
+        // Expanded selectors: [data-ad-preview] for ads, [data-testid="post_message"] for general posts.
+        // Use div[dir="auto"] (not [dir="auto"]) to avoid matching author name spans.
         const fbContent = container
-            ? container.querySelector('div[data-ad-preview="message"], div[data-ad-comet-preview="message"]')
+            ? container.querySelector('[data-ad-preview="message"], [data-ad-comet-preview="message"], [data-testid="post_message"], div[dir="auto"]')
             : null;
 
         if (fbContent) {
@@ -221,10 +266,9 @@ async function extractPageContent(
                 bulletListMarker: '-',
             });
             fbTd.addRule('removeNoise', {
-                filter: ['script', 'style', 'noscript'] as any,
+                filter: ['script', 'style', 'noscript', 'button', 'svg'] as any,
                 replacement: () => ''
             });
-            // Only strip links when destination is Gemini; Save as Markdown keeps them
             if (stripLinks) {
                 fbTd.addRule('stripLinks', {
                     filter: 'a' as any,
@@ -237,11 +281,57 @@ async function extractPageContent(
                 title: document.title || 'Facebook Post',
                 siteName: 'Facebook',
             };
+        } else if (container) {
+            // Fallback: content selector missed — convert the full article container.
+            // Respect stripLinks so Save-as-Markdown preserves links correctly.
+            const fbFallbackTd = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced', bulletListMarker: '-' });
+            fbFallbackTd.addRule('removeNoise', {
+                filter: ['script', 'style', 'noscript', 'button', 'svg'] as any,
+                replacement: () => ''
+            });
+            if (stripLinks) {
+                fbFallbackTd.addRule('stripLinks', {
+                    filter: 'a' as any,
+                    replacement: (content: string) => content
+                });
+            }
+            const markdown = cleanupMarkdown(fbFallbackTd.turndown(container.outerHTML));
+            return { markdown, title: document.title || 'Facebook Post', siteName: 'Facebook' };
         } else {
+            // No container found at all — should be rare after Phase 2 relaxed detection.
+            // Do NOT fall through to Defuddle: it grabs the entire FB page (multiple posts).
             throw new Error('無法精準定位您所點選的 Facebook 貼文內容。');
         }
     }
     // --- End Facebook Handling ---
+
+    // --- Special Handling for X.com (Twitter) ---
+    if (url.match(/https?:\/\/(x|twitter)\.com/) && !url.includes('/status/')) {
+        const container = findXPostContainer(lastRightClickedElement, lastClickX, lastClickY);
+        const tweetText = container?.querySelector('[data-testid="tweetText"]');
+        const userName = container?.querySelector('[data-testid="User-Name"]');
+        
+        if (container && (tweetText || userName)) {
+            const td = makeTurndown();
+            if (stripLinks) {
+                td.addRule('stripLinks', {
+                    filter: 'a' as any,
+                    replacement: (content: string) => content
+                });
+            }
+            const textMd = tweetText ? td.turndown(tweetText.innerHTML) : '';
+            const author = userName ? (userName as HTMLElement).innerText.replace(/\n+/g, ' ') : 'Unknown';
+            
+            return {
+                markdown: cleanupMarkdown(textMd),
+                title: `Tweet by ${author}`,
+                siteName: 'X (Twitter)',
+                author: author
+            };
+        }
+        // If it's single tweet page, fallback to Defuddle (which works well there)
+    }
+    // --- End X.com Handling ---
 
     const resp = await new Defuddle(document, {
         url,
