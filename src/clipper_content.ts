@@ -14,12 +14,95 @@ if ((window as any).__clipperContentLoaded) {
 (window as any).__clipperContentLoaded = true;
 // ───────────────────────────────────────────────────────────────────────────
 
-// Track the last right-clicked element
+// Track the last right-clicked element and its position
 let lastRightClickedElement: Element | null = null;
+let lastClickX = 0;
+let lastClickY = 0;
 
 document.addEventListener('contextmenu', (e: MouseEvent) => {
     lastRightClickedElement = e.target as Element;
-});
+    lastClickX = e.clientX;
+    lastClickY = e.clientY;
+}, { capture: true });
+
+/**
+ * Helper to find the Facebook post container relative to a click.
+ * Staff Level 2.2: Definitive Fuzzy Matching + Center-Screen Fallback.
+ */
+function findFacebookPostContainer(target: Element | null, x: number, y: number): Element | null {
+    const isMainPost = (el: Element) => {
+        const role = el.getAttribute('role');
+        if (role !== 'article' && role !== 'dialog') return false;
+        
+        // 1. Structural Markers (Highly stable)
+        if (el.hasAttribute('aria-posinset')) return true;
+        
+        // 2. Content Markers (Deep check for message or image containers)
+        if (el.querySelector('[data-ad-preview="message"], [data-ad-comet-preview="message"], [data-testid="post_message"]')) return true;
+        
+        // 3. Featured/Pinned Markers
+        if (el.getAttribute('data-testid') === 'fb-feed-item' || el.hasAttribute('data-bt')) return true;
+
+        // 4. Broad check: Many posts have specific layout classes but always have an aria-label or describedby related to the user's name
+        if (el.hasAttribute('aria-describedby') || el.hasAttribute('aria-labelledby')) return true;
+
+        return false;
+    };
+
+    // 1. Direct Context Search (Upward from target)
+    let current: Element | null = target;
+    while (current) {
+        const container = current.closest('div[role="article"], div[role="dialog"]');
+        if (!container) break;
+        if (isMainPost(container)) return container;
+        current = container.parentElement;
+    }
+
+    // 2. Coordinate-Based Fuzzy Scan (Physical viewport overlap)
+    // We use a much larger 100px buffer to handle gap/margin clicks.
+    const allArticles = Array.from(document.querySelectorAll('div[role="article"], div[role="dialog"]'))
+                            .filter(art => isMainPost(art));
+
+    if (y > 0 && allArticles.length > 0) {
+        let bestMatch: Element | null = null;
+        let minDistance = Infinity;
+
+        for (const art of allArticles) {
+            const rect = art.getBoundingClientRect();
+            // Check vertical overlap with a generous 100px buffer
+            if (y >= rect.top - 100 && y <= rect.bottom + 100) {
+                const centerY = rect.top + rect.height / 2;
+                const distance = Math.abs(y - centerY);
+                if (distance < minDistance) {
+                    minDistance = distance;
+                    bestMatch = art;
+                }
+            }
+        }
+        if (bestMatch) return bestMatch;
+    }
+
+    // 3. Ultimate Fallback: Target the article closest to the screen center
+    // This is safer than the "First Post" bug because it's based on where the user is looking.
+    if (allArticles.length > 0) {
+        const viewportCenterY = window.innerHeight / 2;
+        let closestToCenter: Element | null = null;
+        let minCenterDistance = Infinity;
+
+        for (const art of allArticles) {
+            const rect = art.getBoundingClientRect();
+            const centerY = rect.top + rect.height / 2;
+            const distance = Math.abs(viewportCenterY - centerY);
+            if (distance < minCenterDistance) {
+                minCenterDistance = distance;
+                closestToCenter = art;
+            }
+        }
+        return closestToCenter;
+    }
+
+    return null;
+}
 
 /**
  * Sanitize a string to be a safe filename.
@@ -98,29 +181,110 @@ function buildFrontMatter(resp: any): string {
     return meta.join('\n');
 }
 
+// ── Shared extraction result ─────────────────────────────────────────────────
+interface ExtractedContent {
+    markdown: string;       // cleanupMarkdown() 後的 Markdown（純空白正規化，不移除連結）
+    title: string;
+    siteName: string;
+    author?: string;
+    published?: string;
+    description?: string;
+}
+
 /**
- * Clip the current page as Markdown using Defuddle.
+ * Core extraction engine shared by both clipFrame() and extractContent().
+ * Handles Facebook coordinate-targeting AND general Defuddle extraction.
+ *
+ * @param overrideUrl  URL to pass to Defuddle (defaults to window.location.href)
+ * @param options.stripLinks  If true, strips hyperlinks via Turndown rule.
+ *   - Save as Markdown: false (preserve [text](url) for knowledge archiving)
+ *   - Send to Gemini / Facebook: true (hashtag URLs are noise for LLM)
+ */
+async function extractPageContent(
+    overrideUrl?: string,
+    options?: { stripLinks?: boolean }
+): Promise<ExtractedContent> {
+    const url = overrideUrl || window.location.href;
+    const stripLinks = options?.stripLinks ?? false;
+
+    // --- Special Handling for Facebook ---
+    if (url.includes('facebook.com')) {
+        const container = findFacebookPostContainer(lastRightClickedElement, lastClickX, lastClickY);
+        const fbContent = container
+            ? container.querySelector('div[data-ad-preview="message"], div[data-ad-comet-preview="message"]')
+            : null;
+
+        if (fbContent) {
+            const fbTd = new TurndownService({
+                headingStyle: 'atx',
+                codeBlockStyle: 'fenced',
+                bulletListMarker: '-',
+            });
+            fbTd.addRule('removeNoise', {
+                filter: ['script', 'style', 'noscript'] as any,
+                replacement: () => ''
+            });
+            // Only strip links when destination is Gemini; Save as Markdown keeps them
+            if (stripLinks) {
+                fbTd.addRule('stripLinks', {
+                    filter: 'a' as any,
+                    replacement: (content: string) => content
+                });
+            }
+            const markdown = cleanupMarkdown(fbTd.turndown(fbContent.innerHTML));
+            return {
+                markdown,
+                title: document.title || 'Facebook Post',
+                siteName: 'Facebook',
+            };
+        } else {
+            throw new Error('無法精準定位您所點選的 Facebook 貼文內容。');
+        }
+    }
+    // --- End Facebook Handling ---
+
+    const resp = await new Defuddle(document, {
+        url,
+        markdown: true,
+        separateMarkdown: true, // Required for contentMarkdown field (needs defuddle/full)
+        useAsync: true
+    }).parseAsync();
+
+    return {
+        markdown: cleanupMarkdown(resp.contentMarkdown || resp.content || ''),
+        title: resp.title || document.title || 'Untitled',
+        siteName: resp.site || new URL(url).hostname,
+        author: resp.author,
+        published: resp.published,
+        description: resp.description,
+    };
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Clip the current page as Markdown using the shared extractPageContent().
+ * Preserves full links (stripLinks: false) — links are part of the archived knowledge.
  */
 async function clipFrame(): Promise<void> {
     try {
-        const resp = await new Defuddle(document, { 
-            url: window.location.href, // Explicitly pass URL to avoid "Invalid URL" errors
-            markdown: true, 
-            separateMarkdown: true,
-            useAsync: true 
-        }).parseAsync();
+        const extracted = await extractPageContent(window.location.href, { stripLinks: false });
 
-        const frontMatter = buildFrontMatter(resp);
-        const markdown = cleanupMarkdown(resp.contentMarkdown || resp.content || '');
-        const finalContent = frontMatter + markdown;
-        
+        const frontMatter = buildFrontMatter({
+            title: extracted.title,
+            author: extracted.author,
+            site: extracted.siteName,
+            published: extracted.published,
+            description: extracted.description,
+        });
+        const finalContent = frontMatter + extracted.markdown;
+
         const datePrefix = new Date().toISOString().substring(0, 10);
-        const filename = `clip-${datePrefix}-${sanitizeFilename(resp.title || 'article')}.md`;
-        
+        const filename = `clip-${datePrefix}-${sanitizeFilename(extracted.title)}.md`;
+
         downloadMarkdown(finalContent, filename);
     } catch (err) {
-        console.error('[Clipper] Defuddle extraction failed:', err);
-        // Minimal fallback if Defuddle fails
+        console.error('[Clipper] Extraction failed:', err);
+        // Minimal fallback if extraction fails
         const md = `# ${document.title}\n\nExtraction failed. URL: ${window.location.href}`;
         downloadMarkdown(md, `clip-failed-${Date.now()}.md`);
     }
@@ -166,24 +330,22 @@ function clipSelection(): void {
 }
 
 /**
- * Extract content as Markdown string (usually for Gemini).
+ * Extract content as Markdown string for Gemini.
+ * Delegates to extractPageContent() — the shared extraction core.
+ * Facebook path strips links (stripLinks: true) because hashtag/mention URLs are LLM noise.
  */
 async function extractContent(overrideUrl?: string): Promise<string> {
     try {
         const url = overrideUrl || window.location.href;
-        const resp = await new Defuddle(document, { 
-            url: url, // Use override URL or current page URL
-            markdown: true, 
-            useAsync: true 
-        }).parseAsync();
-        
-        const markdown = resp.contentMarkdown || resp.content || '';
-        if (!markdown) return '';
-        
-        const siteName = resp.site || '網頁';
-        return `來自 ${siteName} 的內容：\n\n${markdown}`;
+        // Strip links only for Facebook (hashtag URLs are meaningless for LLM)
+        const stripLinks = url.includes('facebook.com');
+
+        const extracted = await extractPageContent(url, { stripLinks });
+
+        if (!extracted.markdown) return '';
+        return `來自 ${extracted.siteName} 的內容：\n\n${extracted.markdown}`;
     } catch (err) {
-        console.error('[Clipper] Defuddle extraction failed:', err);
+        console.error('[Clipper] Extraction failed:', err);
         return ''; // Return empty string on failure to avoid polluting Gemini prompt
     }
 }
