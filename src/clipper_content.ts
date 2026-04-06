@@ -269,13 +269,21 @@ async function extractPageContent(
                 filter: ['script', 'style', 'noscript', 'button', 'svg'] as any,
                 replacement: () => ''
             });
+            fbTd.addRule('fbDiv', {
+                filter: 'div',
+                replacement: (content) => {
+                    const trimmed = content.trim();
+                    return trimmed ? `\n${trimmed}\n` : '';
+                }
+            });
             if (stripLinks) {
                 fbTd.addRule('stripLinks', {
                     filter: 'a' as any,
                     replacement: (content: string) => content
                 });
             }
-            const markdown = cleanupMarkdown(fbTd.turndown(fbContent.innerHTML));
+            const markdown = cleanupMarkdown(fbTd.turndown(fbContent.innerHTML))
+                .replace(/\n{3,}/g, '\n\n'); // Ensure max one blank line specifically for FB
             return {
                 markdown,
                 title: document.title || 'Facebook Post',
@@ -289,13 +297,21 @@ async function extractPageContent(
                 filter: ['script', 'style', 'noscript', 'button', 'svg'] as any,
                 replacement: () => ''
             });
+            fbFallbackTd.addRule('fbDiv', {
+                filter: 'div',
+                replacement: (content) => {
+                    const trimmed = content.trim();
+                    return trimmed ? `\n${trimmed}\n` : '';
+                }
+            });
             if (stripLinks) {
                 fbFallbackTd.addRule('stripLinks', {
                     filter: 'a' as any,
                     replacement: (content: string) => content
                 });
             }
-            const markdown = cleanupMarkdown(fbFallbackTd.turndown(container.outerHTML));
+            const markdown = cleanupMarkdown(fbFallbackTd.turndown(container.outerHTML))
+                .replace(/\n{3,}/g, '\n\n');
             return { markdown, title: document.title || 'Facebook Post', siteName: 'Facebook' };
         } else {
             // No container found at all — should be rare after Phase 2 relaxed detection.
