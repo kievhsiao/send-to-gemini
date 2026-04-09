@@ -459,6 +459,7 @@ async function extractContent(overrideUrl?: string): Promise<string> {
 /**
  * Gather all image sources and return them.
  * Checks standard src, lazy-loading data attributes, and srcset.
+ * Skips SVGs and images with single side length < 500px (if natural dimensions available).
  */
 function getAllImages(): string[] {
     const urls = new Set<string>();
@@ -467,22 +468,33 @@ function getAllImages(): string[] {
         'data-actualsrc', 'data-src-retina', 'data-hi-res-src'
     ];
 
+    const isSvg = (url: string) => {
+        const lower = url.toLowerCase();
+        return lower.split('?')[0].split('#')[0].endsWith('.svg') || lower.includes('image/svg+xml');
+    };
+
     function collectFromElement(root: ParentNode) {
         // 1. img tags
         root.querySelectorAll('img').forEach(img => {
-            if (img.src && img.src.startsWith('http')) {
-                urls.add(img.src);
+            // Early dimension check if image is loaded (naturalWidth > 0)
+            if (img.naturalWidth > 0 && (img.naturalWidth < 500 || img.naturalHeight < 500)) {
+                return;
             }
-            for (const attr of lazyAttrs) {
-                const val = img.getAttribute(attr);
-                if (val && val.startsWith('http')) {
-                    urls.add(val);
+
+            const processUrl = (url: string | null) => {
+                if (url && url.startsWith('http') && !isSvg(url)) {
+                    urls.add(url);
                 }
+            };
+
+            processUrl(img.src);
+            for (const attr of lazyAttrs) {
+                processUrl(img.getAttribute(attr));
             }
             if (img.srcset) {
                 img.srcset.split(',').forEach(p => {
                     const url = p.trim().split(/\s+/)[0];
-                    if (url && url.startsWith('http')) urls.add(url);
+                    processUrl(url);
                 });
             }
         });
@@ -493,7 +505,9 @@ function getAllImages(): string[] {
             if (srcset) {
                 srcset.split(',').forEach(p => {
                     const url = p.trim().split(/\s+/)[0];
-                    if (url && url.startsWith('http')) urls.add(url);
+                    if (url && url.startsWith('http') && !isSvg(url)) {
+                        urls.add(url);
+                    }
                 });
             }
         });
@@ -504,7 +518,7 @@ function getAllImages(): string[] {
             const bg = style.backgroundImage;
             if (bg && bg.startsWith('url("http')) {
                 const url = bg.slice(5, -2);
-                if (url) urls.add(url);
+                if (url && !isSvg(url)) urls.add(url);
             }
 
             // 4. Check for Shadow DOM
@@ -513,10 +527,10 @@ function getAllImages(): string[] {
             }
         });
     }
-     collectFromElement(document);
+    collectFromElement(document);
 
     const result = Array.from(urls);
-    console.log(`[Clipper] Found ${result.length} unique image URLs.`);
+    console.log(`[Clipper] Found ${result.length} unique eligible image URLs.`);
     return result;
 }
 

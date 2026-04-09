@@ -349,6 +349,28 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
                             if (!fetchResponse.ok) throw new Error(`HTTP ${fetchResponse.status}`);
 
                             const blob = await fetchResponse.blob();
+
+                            // --- Precise Filtering: Skip SVGs and images < 500px on any side ---
+                            if (blob.type === 'image/svg+xml') {
+                                console.log(`[Background] Skipping SVG blob: ${url}`);
+                                continue;
+                            }
+
+                            try {
+                                const bitmap = await createImageBitmap(blob);
+                                const { width, height } = bitmap;
+                                bitmap.close(); // Release resource immediately
+
+                                if (width < 500 || height < 500) {
+                                    console.log(`[Background] Skipping small image (${width}x${height}): ${url}`);
+                                    continue;
+                                }
+                            } catch (e) {
+                                // If bitmap creation fails, proceed for backward compatibility.
+                                console.warn(`[Background] Could not determine dimensions for ${url}, error:`, e);
+                            }
+                            // ------------------------------------------------------------------
+
                             // Fix #2: reuse arrayBufferToBase64
                             const base64 = arrayBufferToBase64(await blob.arrayBuffer());
                             const dataUrl = `data:${blob.type};base64,${base64}`;
@@ -356,8 +378,10 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
                         } catch (err) {
                             console.error(`[Background] Failed to fetch/download ${url}:`, err);
                             executeDownload(url, tabUrl, false);
+                        } finally {
+                            // Always wait 100ms before next request, even on skip or error
+                            await new Promise(r => setTimeout(r, 100));
                         }
-                        await new Promise(r => setTimeout(r, 100));
                     }
 
                     // Cleanup DNR rule
